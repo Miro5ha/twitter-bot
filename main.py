@@ -1,142 +1,158 @@
 import os
-import json
 import asyncio
 import logging
 import aiohttp
+import json
+from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
+    ContextTypes,
     CommandHandler,
     MessageHandler,
-    ContextTypes,
     filters,
 )
+from datetime import datetime
 
-logging.basicConfig(level=logging.INFO)
+load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 BEARER_TOKEN = os.getenv("BEARER_TOKEN")
 
-tracked_users = {}
-user_last_tweet_ids = {}
+tracked_users = {}  # {username: {"chat_id": ..., "last_tweet_id": ...}}
 
+TWEET_COUNT = 10
 HEADERS = {"Authorization": f"Bearer {BEARER_TOKEN}"}
 
+logging.basicConfig(level=logging.INFO)
 
-async def fetch_user_id(username):
-    url = f"https://api.twitter.com/2/users/by/username/{username}"
+# ---------------------- Tweet Fetcher ----------------------
+
+async def fetch_tweets(username):
+    url = f"https://api.twitter.com/2/tweets/search/recent?query=from:{username}&tweet.fields=created_at&max_results={TWEET_COUNT}"
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=HEADERS) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data.get("data", {}).get("id")
-    return None
+            if resp.status != 200:
+                return []
+            data = await resp.json()
+            return data.get("data", [])
 
+# ---------------------- Command Handlers ----------------------
 
-async def fetch_tweets(user_id):
-    url = (
-        f"https://api.twitter.com/2/users/{user_id}/tweets"
-        f"?tweet.fields=created_at&max_results=10"
-    )
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=HEADERS) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data.get("data", [])
-    return []
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Просто напиши @username чтобы отслеживать пользователя.")
 
+async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not tracked_users:
+        await update.message.reply_text("Никто не отслеживается.")
+        return
+    users = "\n".join([f"@{user}" for user in tracked_users])
+    await update.message.reply_text(f"Отслеживаемые:\n{users}")
 
-async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if not text.startswith("@"):
+async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 1:
+        await update.message.reply_text("Используй: /unsubscribe @username")
         return
 
-    username = text[1:].lower()
-    chat_id = update.effective_chat.id
-
-    if chat_id not in tracked_users:
-        tracked_users[chat_id] = []
-
-    if username not in tracked_users[chat_id]:
-        tracked_users[chat_id].append(username)
-        await update.message.reply_text(f"Теперь отслеживаю @{username}")
-
-        user_id = await fetch_user_id(username)
-        if user_id:
-            tweets = await fetch_tweets(user_id)
-            for tweet in reversed(tweets):
-                await update.message.reply_text(
-                    f"@{username}:\n{tweet['text']}\n{tweet['created_at']}"
-                )
-                user_last_tweet_ids[username] = tweet["id"]
-        else:
-            await update.message.reply_text("Не удалось получить ID пользователя.")
+    username = context.args[0].lstrip("@").lower()
+    if username in tracked_users and tracked_users[username]["chat_id"] == update.effective_chat.id:
+        del tracked_users[username]
+        save_tracked_users()
+        await update.message.reply_text(f"Пользователь @{username} удалён из отслеживания.")
     else:
-        await update.message.reply_text(f"@{username} уже отслеживается.")
+        await update.message.reply_text(f"@{username} не найден.")
 
+# ---------------------- Message Handler ----------------------
 
-async def tweet_checker(app):
-    while True:
-        for chat_id, usernames in tracked_users.items():
-            for username in usernames:
-                user_id = await fetch_user_id(username)
-                if not user_id:
-                    continue
-                tweets = await fetch_tweets(user_id)
-                if not tweets:
-                    continue
-                latest = tweets[0]
-                last_id = user_last_tweet_ids.get(username)
-                if latest["id"] != last_id:
-                    user_last_tweet_ids[username] = latest["id"]
-                    await app.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"@{username}:\n{latest['text']}\n{latest['created_at']}"
-                    )
-        await asyncio.sleep(60)
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
 
-
-async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text.startswith("@"):
         return
 
     parts = text.split(maxsplit=1)
-    if len(parts) != 2:
+    username = parts[0].lstrip("@").lower()
+    query = parts[1] if len(parts) > 1 else None
+
+    tweets = await fetch_tweets(username)
+    if not tweets:
+        await update.message.reply_text(f"Не удалось получить твиты @{username}.")
         return
 
-    username = parts[0][1:].lower()
-    query = parts[1].lower()
+    if query:
+        for tweet in tweets:
+            if query.lower() in tweet["text"].lower():
+                await update.message.reply_text(f'https://twitter.com/{username}/status/{tweet["id"]}')
+                return
+        await update.message.reply_text("Твит с таким текстом не найден.")
+    else:
+        tracked_users[username] = {
+            "chat_id": update.effective_chat.id,
+            "last_tweet_id": tweets[0]["id"] if tweets else None,
+        }
+        save_tracked_users()
+        await update.message.reply_text(f"Теперь отслеживаю @{username}.\nПоследние {TWEET_COUNT} твитов:")
+        for tweet in tweets:
+            await update.message.reply_text(f'https://twitter.com/{username}/status/{tweet["id"]}')
 
-    user_id = await fetch_user_id(username)
-    if not user_id:
-        await update.message.reply_text("Пользователь не найден.")
-        return
+# ---------------------- Tweet Checker ----------------------
 
-    tweets = await fetch_tweets(user_id)
-    for tweet in tweets:
-        if query in tweet["text"].lower():
-            await update.message.reply_text(
-                f"@{username}:\n{tweet['text']}\n{tweet['created_at']}"
-            )
-            return
+async def tweet_checker(application):
+    while True:
+        for username, data in tracked_users.items():
+            tweets = await fetch_tweets(username)
+            if not tweets:
+                continue
 
-    await update.message.reply_text("Ничего не найдено в последних твитах.")
+            new_tweets = []
+            for tweet in tweets:
+                if tweet["id"] == data.get("last_tweet_id"):
+                    break
+                new_tweets.append(tweet)
 
+            if new_tweets:
+                tracked_users[username]["last_tweet_id"] = tweets[0]["id"]
+                for tweet in reversed(new_tweets):
+                    text = f"@{username} новый твит:\nhttps://twitter.com/{username}/status/{tweet['id']}"
+                    try:
+                        await application.bot.send_message(chat_id=data["chat_id"], text=text)
+                    except Exception as e:
+                        logging.error(f"Ошибка отправки твита @{username}: {e}")
 
-async def start_checker(app):
-    asyncio.create_task(tweet_checker(app))
+        save_tracked_users()
+        await asyncio.sleep(60)
 
+# ---------------------- Save/Load ----------------------
+
+SAVE_FILE = "tracked_users.json"
+
+def save_tracked_users():
+    with open(SAVE_FILE, "w") as f:
+        json.dump(tracked_users, f)
+
+def load_tracked_users():
+    global tracked_users
+    if os.path.exists(SAVE_FILE):
+        with open(SAVE_FILE, "r") as f:
+            tracked_users = json.load(f)
+
+# ---------------------- Main ----------------------
 
 def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(start_checker).build()
+    load_tracked_users()
 
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("list", list_users))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_user))
+    app.add_handler(CommandHandler("unsubscribe", unsubscribe))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    app.job_queue.run_once(lambda *_: asyncio.create_task(tweet_checker(app)), when=1)
 
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
