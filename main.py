@@ -4,15 +4,20 @@ import asyncio
 import logging
 import aiohttp
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 BEARER_TOKEN = os.getenv("BEARER_TOKEN")
 
-tracked_users = {}  # chat_id -> list of usernames
-user_last_tweet_ids = {}  # username -> last tweet id
+tracked_users = {}
+user_last_tweet_ids = {}
 
 HEADERS = {"Authorization": f"Bearer {BEARER_TOKEN}"}
 
@@ -118,13 +123,16 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ничего не найдено в последних твитах.")
 
 
-def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_user))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query))
-
+async def start_checker(app):
     asyncio.create_task(tweet_checker(app))
+
+
+def main():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(start_checker).build()
+
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_user))
+
     app.run_polling()
 
 
