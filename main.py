@@ -130,6 +130,7 @@ async def start_checker(app):
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(start_checker).build()
 
+    app.add_handler(CommandHandler("list", list_users))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_user))
 
