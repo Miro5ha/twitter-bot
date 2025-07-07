@@ -1,4 +1,4 @@
-git add requirements.txt
-git commit -m "Добавил зависимость job-queue"
-git push origin main
+python-telegram-bot[job-queue]==20.7
+aiohttp
+requests
 
