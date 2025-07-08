@@ -143,6 +143,21 @@ async def start_checker(app):
 
 
 def main():
+    try:
+        app = (
+            ApplicationBuilder()
+            .token(TELEGRAM_TOKEN)
+            .post_init(start_checker)
+            .build()
+        )
+
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        app.add_handler(...)  # все хендлеры
+        await app.run_polling()
+
+    except telegram.error.Conflict:
+        print("❌ Бот уже работает где-то ещё. Заверши старую сессию.")
+        
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(start_checker).build()
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query))
