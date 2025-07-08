@@ -148,6 +148,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_user))
 
+    await app.bot.delete_webhook(drop_pending_updates=True)
+
     app.run_polling()
 
 
