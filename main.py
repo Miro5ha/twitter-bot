@@ -9,6 +9,7 @@ from telegram.ext import (
     MessageHandler,
     ContextTypes,
     filters,
+    CommandHandler,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -45,36 +46,14 @@ async def fetch_tweets(user_id):
     return []
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text.startswith("@"):
         return
 
-    parts = text.split(maxsplit=1)
-    username = parts[0][1:].lower()
+    username = text[1:].lower()
     chat_id = update.effective_chat.id
 
-    # Поиск твита по тексту
-    if len(parts) == 2:
-        query = parts[1].lower()
-
-        user_id = await fetch_user_id(username)
-        if not user_id:
-            await update.message.reply_text("Пользователь не найден.")
-            return
-
-        tweets = await fetch_tweets(user_id)
-        for tweet in tweets:
-            if query in tweet["text"].lower():
-                await update.message.reply_text(
-                    f"@{username}:\n{tweet['text']}\n{tweet['created_at']}"
-                )
-                return
-
-        await update.message.reply_text("Ничего не найдено в последних твитах.")
-        return
-
-    # Отслеживание пользователя
     if chat_id not in tracked_users:
         tracked_users[chat_id] = []
 
@@ -117,14 +96,69 @@ async def tweet_checker(app):
         await asyncio.sleep(60)
 
 
+async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if not text.startswith("@"):
+        return
+
+    parts = text.split(maxsplit=1)
+    if len(parts) != 2:
+        return await track_user(update, context)
+
+    username = parts[0][1:].lower()
+    query = parts[1].lower()
+
+    user_id = await fetch_user_id(username)
+    if not user_id:
+        await update.message.reply_text("Пользователь не найден.")
+        return
+
+    tweets = await fetch_tweets(user_id)
+    for tweet in tweets:
+        if query in tweet["text"].lower():
+            await update.message.reply_text(
+                f"@{username}:\n{tweet['text']}\n{tweet['created_at']}"
+            )
+            return
+
+    await update.message.reply_text("Ничего не найдено в последних твитах.")
+
+
 async def start_checker(app):
     asyncio.create_task(tweet_checker(app))
+
+
+async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    users = tracked_users.get(chat_id, [])
+    if not users:
+        await update.message.reply_text("Вы пока никого не отслеживаете.")
+    else:
+        await update.message.reply_text("Отслеживаемые пользователи:\n" + "\n".join(f"@{u}" for u in users))
+
+
+async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if len(context.args) != 1:
+        await update.message.reply_text("Используй: /unsubscribe <username>")
+        return
+
+    username = context.args[0].lstrip("@").lower()
+
+    if chat_id in tracked_users and username in tracked_users[chat_id]:
+        tracked_users[chat_id].remove(username)
+        user_last_tweet_ids.pop(username, None)
+        await update.message.reply_text(f"@{username} больше не отслеживается.")
+    else:
+        await update.message.reply_text(f"@{username} не найден в списке отслеживаемых.")
 
 
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(start_checker).build()
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("list", list_users))
+    app.add_handler(CommandHandler("unsubscribe", unsubscribe))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query))
 
     app.run_polling()
 
