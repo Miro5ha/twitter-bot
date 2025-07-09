@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 BEARER_TOKEN = os.getenv("BEARER_TOKEN")
 HEADERS = {"Authorization": f"Bearer {BEARER_TOKEN}"}
-DB_PATH = "tracked_users.db"
+DB_PATH = "/app/data/tracked_users.db"
 
 # --- DB SETUP ---
 
